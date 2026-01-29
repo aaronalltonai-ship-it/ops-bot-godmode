@@ -262,6 +262,125 @@ function Log-Line($message) {
   "$ts $message" | Add-Content -Path $appLog -Encoding ascii
 }
 
+function Get-NotionProperty($task, $propName) {
+  if (-not $task -or -not $task.properties) { return $null }
+  $props = $task.properties.PSObject.Properties
+  foreach ($prop in $props) {
+    if ($prop.Name -ieq $propName) { return $prop.Value }
+  }
+  return $null
+}
+
+function Get-NotionRichText($task, $propName) {
+  $prop = Get-NotionProperty $task $propName
+  if (-not $prop) { return "" }
+  switch ($prop.type) {
+    "rich_text" {
+      return ($prop.rich_text | ForEach-Object { $_.plain_text }) -join " "
+    }
+    "title" {
+      return ($prop.title | ForEach-Object { $_.plain_text }) -join " "
+    }
+  }
+  return ""
+}
+
+function Get-NotionSelect($task, $propName) {
+  $prop = Get-NotionProperty $task $propName
+  if (-not $prop) { return "" }
+  if ($prop.type -eq "select" -and $prop.select) { return $prop.select.name }
+  if ($prop.type -eq "multi_select" -and $prop.multi_select) {
+    return ($prop.multi_select | ForEach-Object { $_.name }) -join ", "
+  }
+  return ""
+}
+
+function Get-NotionText($task, $propName) {
+  $text = Get-NotionRichText $task $propName
+  if ($text) { return $text }
+  $text = Get-NotionSelect $task $propName
+  return $text
+}
+
+function Build-SoraPrompt($task) {
+  $title = Get-TaskTitle $task
+  $description = Get-NotionText $task "Description"
+  if (-not $description) { $description = Get-NotionText $task "Notes" }
+  $style = Get-NotionText $task "Sora Style"
+  $subject = Get-NotionText $task "Sora Subject"
+  $action = Get-NotionText $task "Sora Action"
+  $location = Get-NotionText $task "Sora Location"
+  $mood = Get-NotionText $task "Sora Mood"
+  $parts = @()
+  if ($title) { $parts += "Scene: $title." }
+  if ($description) { $parts += $description.Trim() }
+  if ($style) { $parts += "Style: $style." }
+  if ($subject) { $parts += "Subject: $subject." }
+  if ($action) { $parts += "Action: $action." }
+  if ($location) { $parts += "Location: $location." }
+  if ($mood) { $parts += "Mood: $mood." }
+  $parts += "Render a cinematic short-form video that showcases the story."
+  if (-not $subject -and $title) { $parts += "Subject: $title." }
+  return ($parts -join " ").Replace("  ", " ").Trim()
+}
+
+function Start-SoraRender($task) {
+  if (-not $task) { return $false }
+  $prompt = Build-SoraPrompt $task
+  if (-not $prompt) {
+    Log-Line "SORA SKIP no prompt"
+    return $false
+  }
+  $script = $env:SORA_RENDER_SCRIPT
+  if (-not $script) {
+    $script = "D:\workspace\ops-bot-godmode-repo\scripts\sora-render.js"
+  }
+  if (-not (Test-Path $script)) {
+    Log-Line "SORA SKIP script missing path=$script"
+    return $false
+  }
+  $html = $env:SORA_RENDER_HTML
+  if (-not $html) {
+    $html = "D:\Sora.html"
+  }
+  if (-not (Test-Path $html)) {
+    Log-Line "SORA SKIP html missing path=$html"
+    return $false
+  }
+  $taskId = $task.id
+  $args = @("--prompt", $prompt, "--taskId", $taskId, "--html", $html)
+  $output = & node $script @args 2>&1
+  try {
+    $result = $output | ConvertFrom-Json
+  } catch {
+    Log-Line "SORA PARSE FAILED taskId=$taskId raw=$output"
+    return $false
+  }
+  if (-not $result.success) {
+    Log-Line "SORA FAILED taskId=$taskId error=$($result.error)"
+    return $false
+  }
+  if (-not $result.videoSrc) {
+    Log-Line "SORA NO_VIDEO_SRC taskId=$taskId"
+    return $false
+  }
+  $rowTime = (Get-Date).ToString("o")
+  $row = "$rowTime,$AgentName,$taskId,$($result.videoSrc),,,,"
+  Add-Content -Path $deployCsv -Value $row
+  Log-Line "SORA DELIVERABLE taskId=$taskId video=$($result.videoSrc)"
+  return $true
+}
+
+function Try-SoraRender($task, $stateEntry) {
+  if (-not $task -or -not $stateEntry) { return }
+  if ($stateEntry.ContainsKey("soraRendered") -and $stateEntry.soraRendered) { return }
+  if ($stateEntry.status -ne "done") { return }
+  if (Start-SoraRender $task) {
+    $stateEntry.soraRendered = $true
+    Save-State $state
+  }
+}
+
 function Sync-OutArtifacts {
   try {
     if (Test-Path $appLog) { Copy-Item -Path $appLog -Destination (Join-Path $outLogsDir "app.log") -Force }
@@ -543,6 +662,7 @@ while ($true) {
             }
             Normalize-DeliverableNames
             Sync-ToRepo $taskId
+            Try-SoraRender $task $state.processed[$taskId]
             Save-State $state
           }
         }
@@ -562,6 +682,7 @@ while ($true) {
         }
         Normalize-DeliverableNames
         Sync-ToRepo $q.Key
+        Try-SoraRender $task $state.processed[$q.Key]
         Save-State $state
       }
 

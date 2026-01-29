@@ -1,0 +1,24 @@
+{
+  "name": "ops-bot-godmode-repo",
+  "version": "1.0.0",
+  "description": "This repository packages the GodMode-enabled watcher along with a sample Cody dispatcher.",
+  "main": "index.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/aaronalltonai-ship-it/ops-bot-godmode.git"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "commonjs",
+  "bugs": {
+    "url": "https://github.com/aaronalltonai-ship-it/ops-bot-godmode/issues"
+  },
+  "homepage": "https://github.com/aaronalltonai-ship-it/ops-bot-godmode#readme",
+  "dependencies": {
+    "playwright": "^1.58.0"
+  }
+}
